@@ -1,6 +1,6 @@
 #!/bin/bash
 #工程名
-project_name="工程名"
+project_name="HBuilder-Hello"
 
 #获取当前脚本所在目录
 SOURCE="$0"
@@ -12,68 +12,71 @@ done
 SHELLPATH="$( cd -P "$( dirname "$SOURCE"  )" && pwd  )"
 
 #Info.plist路径
-INFOPLIST_FILE=${SHELLPATH}/${project_name}/Info.plist
-#版本号自增
-buildNumber=$(/usr/libexec/PlistBuddy -c "Print CFBundleVersion" ${INFOPLIST_FILE})
-buildNumber=$(($buildNumber + 1))
-/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $buildNumber" "$INFOPLIST_FILE"
+INFOPLIST_FILE=${SHELLPATH}/${project_name}/${project_name}-Info.plist
+
 #打包模式 Debug/Release
 development_mode=$1
 
 #scheme名
-scheme_name="scheme名"
-
+scheme_name="学创在线"
+APPLEID="6450803784"
 #设置蒲公英参数
 user_key=""
 api_key=""
-
+#appstore参数
+apiKey=""
+apiIssuer=""
 #证书名
-# if [ ${development_mode} = "Debug" ]; then
-#     code_sign_identiy=""
-# else
-#     code_sign_identiy="上传证书名"
-# fi
+if [[ ${development_mode} = "Debug" ]]; then
+    code_sign_identiy="DevelopmentExportOptionsPlist"
+elif [[ ${development_mode} = "Release" ]]; then
+    code_sign_identiy="DistributionExportOptionsPlist"
+else
+echo "请输入参数(Debug,Release)"
+exit
+fi
 
-#provisioning file名称
-# if [ ${development_mode} = "Debug" ]; then
-#    provisioning_file=""
-# else
-#     provisioning_file="上传配置文件名"
-# fi
 
 #plist文件所在路径
-if [ ${development_mode} = "Debug" ]; then
+if [[ ${development_mode} = "Debug" ]]; then
     exportOptionsPlistPath=${SHELLPATH}/DevelopmentExportOptionsPlist.plist
-else
+elif [[ ${development_mode} = "Release" ]]; then
     exportOptionsPlistPath=${SHELLPATH}/DistributionExportOptionsPlist.plist
+else
+echo "请输入参数(Debug,Release)"
+exit
 fi
 
 #导出.ipa文件所在路径
-exportFilePath=~/Desktop/$project_name-$development_mode-$(date "+%Y-%m-%d_%H\:%M\:%S")
+exportFilePath=~/Desktop/$scheme_name-$development_mode-$(date "+%Y-%m-%d-%H-%M-%S")
 
-echo '*** 正在清理工程 ***'
-xcodebuild \
-clean -configuration ${development_mode} -quiet  || exit 
-echo '*** 清理完成 ***'
+echo "*** 正在清理工程 ***"
+xcodebuild clean \
+-configuration ${development_mode} -quiet || exit
+echo "*** 清理完成 ***"
 
-
-echo '*** 正在编译工程 For '${development_mode}
-xcodebuild \
-archive -workspace ${project_name}.xcworkspace \
+echo "*** Archive For $development_mode ***"
+agvtool next-version
+xcodebuild archive \
+-project ${project_name}.xcodeproj \
 -scheme ${scheme_name} \
 -configuration ${development_mode} \
 -archivePath ${SHELLPATH}/build/${project_name}.xcarchive \
 -quiet || exit
-echo '*** 编译完成 ***'
+echo "*** Archive完成 ***"
 
+CFBundleVersion=$(/usr/libexec/PlistBuddy -c "Print ApplicationProperties:CFBundleVersion" ${SHELLPATH}/build/${project_name}.xcarchive/Info.plist)
+CFBundleIdentifier=$(/usr/libexec/PlistBuddy -c "Print ApplicationProperties:CFBundleIdentifier" ${SHELLPATH}/build/${project_name}.xcarchive/Info.plist)
+CFBundleShortVersionString=$(/usr/libexec/PlistBuddy -c "Print ApplicationProperties:CFBundleShortVersionString" ${SHELLPATH}/build/${project_name}.xcarchive/Info.plist)
 
-echo '*** 正在打包 ***'
-xcodebuild -exportArchive -archivePath ${SHELLPATH}/build/${project_name}.xcarchive \
+echo '*** 导出ipa ***'
+xcodebuild -exportArchive -allowProvisioningUpdates \
+-archivePath ${SHELLPATH}/build/${project_name}.xcarchive \
 -configuration ${development_mode} \
 -exportPath ${exportFilePath} \
 -exportOptionsPlist ${exportOptionsPlistPath} \
-# CODE_SIGN_IDENTITY=${code_sign_identiy} \
-# PROVISIONING_PROFILE=${provisioning_file}
+-destination generic/platform=iOS \
+CODE_SIGN_IDENTITY=${code_sign_identiy} \
 
 # 删除build包
 if [[ -d build ]]; then
@@ -81,16 +84,49 @@ if [[ -d build ]]; then
 fi
 
 if [ -e $exportFilePath/$scheme_name.ipa ]; then
-    echo "*** .ipa文件已导出 ***"
+    echo "*** ipa已导出 ***"
     cd ${exportFilePath}
-    echo "*** 开始上传.ipa文件 ***"
     #此处上传分发应用
-    RESULT=$(curl -F "file=@${scheme_name}.ipa" \
-    -F "uKey=$user_key" \
-    -F "_api_key=$api_key" \
-    -F "publishRange=2" http://www.pgyer.com/apiv1/app/upload) 
-    echo "*** .ipa文件上传蒲公英成功 ***"
-    echo $RESULT
+    if [[ ${development_mode} = "Debug" ]]; then
+        echo "*** 上传至蒲公英 ***"
+        RESULT=$(curl -F "file=@${scheme_name}.ipa" \
+        -F "uKey=$user_key" \
+        -F "_api_key=$api_key" \
+        -F "publishRange=2" http://www.pgyer.com/apiv1/app/upload)
+        echo $RESULT | jq .
+        echo "*** .ipa文件上传蒲公英成功 ***"
+    elif [[ ${development_mode} = "Release" ]]; then
+        echo "*** 应用验证 ***"
+        
+        xcrun altool --validate-app \
+        -f ${scheme_name}.ipa \
+        -t ios \
+        --apiKey ${apiKey} \
+        --apiIssuer ${apiIssuer} \
+        --show-progress \
+        --output-format json | jq .
+        
+        if [[ $? -eq 1 ]]; then
+            echo "*** 验证失败 ***"
+            exit
+        else
+            echo "*** 上传至App Store Connect ***"
+            xcrun altool --upload-package \
+            ${scheme_name}.ipa \
+            -t ios \
+            --apiKey ${apiKey} \
+            --apiIssuer ${apiIssuer} \
+            --apple-id $APPLEID\
+            --bundle-id $CFBundleIdentifier \
+            --bundle-short-version-string $CFBundleShortVersionString \
+            --bundle-version $CFBundleVersion \
+            --show-progress \
+            --output-format json | jq .
+        fi
+    else
+        exit
+    fi
+    
 else
     echo "*** 创建.ipa文件失败 ***"
 fi
